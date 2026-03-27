@@ -1,6 +1,9 @@
 #!/bin/bash
 # DICOM Watcher Daemon — checa Downloads a cada 2 segundos
+# Fluxo: detecta ZIP → unifica Patient ID → abre ZIP no OsiriX
 LOG="$HOME/.dicom-opener/.opened_zips"
+PYTHON="$HOME/.dicom-opener/venv/bin/python3"
+UNIFY="$HOME/.dicom-opener/unify_patient.py"
 touch "$LOG"
 
 while true; do
@@ -17,15 +20,40 @@ return zipFiles
     for B in "${NAMES[@]}"; do
         if echo "$B" | grep -qE '^[A-Z][A-Z_]+-[0-9]+\.zip$'; then
             if ! grep -qF "$B" "$LOG"; then
+                ZIP_PATH="$HOME/Downloads/$B"
+
+                # Unifica Patient ID (retorna caminho do ZIP a abrir)
+                OPEN_PATH=$("$PYTHON" "$UNIFY" "$ZIP_PATH" 2>/tmp/dicom_unify.log)
+
+                # Fallback: se o script falhou, usa o ZIP original
+                if [ -z "$OPEN_PATH" ] || [ ! -e "$OPEN_PATH" ]; then
+                    OPEN_PATH="$ZIP_PATH"
+                fi
+
                 # Abre OsiriX se necessário
                 if ! pgrep -x "OsiriX Lite" > /dev/null; then
                     open -a "OsiriX Lite"
                     sleep 2
                 fi
 
-                open -a "OsiriX Lite" "$HOME/Downloads/$B"
+                # Abre o ZIP no OsiriX (mesmo comportamento de antes)
+                open -a "OsiriX Lite" "$OPEN_PATH"
+
                 echo "$B" >> "$LOG"
-                osascript -e "display notification \"Abrindo: $B\" with title \"DICOM Opener\" sound name \"Glass\""
+
+                # Limpa ZIP unificado temporário após alguns segundos
+                if [ "$OPEN_PATH" != "$ZIP_PATH" ]; then
+                    (sleep 30 && rm -f "$OPEN_PATH") &
+                fi
+
+                # Notificação
+                UNIFY_MSG=$(cat /tmp/dicom_unify.log 2>/dev/null | head -1)
+                if echo "$UNIFY_MSG" | grep -q "UNIFIED"; then
+                    osascript -e "display notification \"$B (paciente unificado)\" with title \"DICOM Opener\" sound name \"Glass\""
+                else
+                    osascript -e "display notification \"Abrindo: $B\" with title \"DICOM Opener\" sound name \"Glass\""
+                fi
+
                 break
             fi
         fi
